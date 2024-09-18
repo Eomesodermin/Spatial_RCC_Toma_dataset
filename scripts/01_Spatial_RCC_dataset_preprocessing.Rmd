@@ -1,0 +1,969 @@
+---
+title: "Spatial_dataset_preprocessing"
+author: "Dillon Corvino"
+date: "10/07/2024"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: united
+    highlight: tango
+    df_print: paged
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+Built with R version `r getRversion()`
+
+## Setup {.tabset}
+
+### Dataset information
+```{r Dataset_Info}
+
+# Human 
+# RCC - subjected to targeted spatial RNA analysis 
+# dataset provided by Marieta Toma 
+
+
+```
+
+### Environment
+```{r setup}
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,  
+  eval = TRUE, 
+  tidy = TRUE
+)
+
+knitr::opts_knit$set(
+  root.dir = "../"
+)
+
+
+# Environment Set up
+rm(list = ls()) #Clean workspace
+cat("\014")     #Clean Console
+gc() # Free memory
+
+# pipeline variables
+long.compute <- TRUE
+do.plot <- TRUE
+
+# Establish working directory
+library("rstudioapi")
+
+# Set working directory to source file location
+setwd(dirname(getActiveDocumentContext()$path))
+setwd("..")
+
+# Create output directories & load custom functions & colour scheme
+source("scripts/Setup.R", local = knitr::knit_global())
+
+
+ggplot2_switch_version(desired_version = "3.4.4")
+
+
+# load packages
+library("Seurat")
+library("SeuratObject")
+library("SeuratData")
+library("Azimuth")
+library("SeuratWrappers")
+library("dplyr")
+library("scCustomize")
+
+
+
+```
+
+
+## Pre-processing {.tabset}
+
+
+### Load dataset
+```{r load_dataset}
+
+if(long.compute){
+  input.path <- "/Users/ieo/Documents/Sequence_alignment/Marieta_toma_Spatial_RCC_dataset/"
+  region.1.path <- "output-XETG00229__0019014__Region_1__20240131__145505/"
+  region.2.path <- "output-XETG00229__0019014__Region_2__20240131__145505/"
+  
+  region.1 <- LoadXenium(data.dir = paste0(input.path, region.1.path))
+  region.2 <- LoadXenium(data.dir = paste0(input.path, region.2.path))
+  
+  
+  
+  # remove cells with 0 counts
+  region.1 <- subset(region.1, subset = nCount_Xenium > 0)
+    region.2 <- subset(region.2, subset = nCount_Xenium > 0)
+
+  rownames(region.1)
+  
+  ImageDimPlot(region.2, fov = "fov", molecules = c("NKG7", "CD8A", "FOXP3", "CD19"), nmols = 500, axes = T)
+  
+  VlnPlot(region.1, features = c("nFeature_Xenium", "nCount_Xenium"), ncol = 2, pt.size = 0)
+
+  ImageFeaturePlot(region.2, features = c("NKG7", "CD8A", "FOXP3", "CD19"), max.cutoff = c(25,
+    35, 12, 10), size = 0.75, cols = c("white", "red"))
+  
+  
+  
+  region.1 <- SCTransform(region.1, assay = "Xenium")
+  region.1 <- RunPCA(region.1, npcs = 30, features = rownames(region.1))
+  region.1 <- RunUMAP(region.1, dims = 1:30)
+  region.1 <- FindNeighbors(region.1, reduction = "pca", dims = 1:30)
+  region.1 <- FindClusters(region.1, resolution = 0.3)
+  
+  DimPlot(region.1)
+  FeaturePlot_scCustom(region.1, c("CD8A", "CD4"))
+  
+    VlnPlot(region.1, features = c("CD8A", "CD4"), ncol = 2, pt.size = 0, group.by = "orig.ident")
+
+
+      
+      
+      ImageDimPlot(region.2, cols = "polychrome", size = 0.75)
+  
+#devtools::install_github("dmcable/spacexr", build_vignettes = FALSE)
+  
+library(spacexr)
+
+query.counts <- GetAssayData(region.1, assay = "Xenium", layer = "counts")
+coords <- GetTissueCoordinates(region.1, which = "centroids")
+rownames(coords) <- coords$cell
+coords$cell <- NULL
+query <- SpatialRNA(coords, query.counts, colSums(query.counts))
+
+
+
+
+}
+
+```
+
+
+
+## QC and Filter {.tabset}
+
+### QC & filter
+
+```{r QC_and_filter}
+
+if(long.compute){
+  
+  
+  for(i in seq_along(sequencing.runs)){
+    
+    
+    run.id <- unique(HL.seurat.list[[i]]$orig.ident)
+    
+    
+    # Create output dir
+    
+    output.dir <- paste0("results/QC/QC_", run.id)
+    
+    if(!dir.exists(output.dir)){
+      dir.create(output.dir, 
+                 recursive = T)
+      
+    }
+    
+    
+    # set idents to sampleID
+    Idents(HL.seurat.list[[i]]) <- HL.seurat.list[[i]]$orig.ident
+    
+    # set default assay 
+    DefaultAssay(HL.seurat.list[[i]]) <- "RNA"
+    
+    # Add mitochondrial and ribosomal gene percentages
+    
+    HL.seurat.list[[i]] <- Add_Mito_Ribo(object = HL.seurat.list[[i]], species = "Human", overwrite = TRUE) 
+    
+    # Add cell complexity/novelty QC metric
+    
+    HL.seurat.list[[i]] <- Add_Cell_Complexity(object = HL.seurat.list[[i]])
+    
+    # Setting cutoff values 
+    feature.low <- 650
+    feature.high <- 5500
+    umi.low <- 1200
+    umi.high <- 45000
+    mito.high <- 10
+    ribo.high <- 6
+    complexity.high <- 0.8
+    
+    
+    ########################
+    # QC plots
+    ########################
+    if(do.plot){
+      # nFeatures
+      print(
+        QC_Plots_Genes(seurat_object = HL.seurat.list[[i]], 
+                       low_cutoff = feature.low, 
+                       high_cutoff = feature.high,
+                       pt.size = 0.05) #how many genes per cell? See where to set the cutoffs later
+      )
+      
+      dev.copy(pdf, paste0(output.dir, "_genes.pdf"))
+      dev.off()
+      
+      
+      # UMI
+      print(
+        QC_Plots_UMIs(seurat_object = HL.seurat.list[[i]], 
+                      low_cutoff = umi.low, 
+                      high_cutoff = umi.high, 
+                      y_axis_log = T,
+                      pt.size = 0.05)
+      )
+      
+      dev.copy(pdf, paste0(output.dir, "_UMI.pdf"))
+      dev.off()
+      
+      
+      # Mito percentage
+      print(
+        QC_Plots_Mito(seurat_object = HL.seurat.list[[i]], 
+                      high_cutoff = mito.high,
+                      pt.size = 0.05)
+      )
+      
+      dev.copy(pdf, paste0(output.dir, "_mito.pdf"))
+      dev.off()
+      
+      
+      # Ribo percentage
+      print(
+        QC_Plots_Feature(seurat_object = HL.seurat.list[[i]],
+                         feature = "percent_ribo",
+                         high_cutoff = ribo.high,
+                         pt.size = 0.05)
+      )
+      
+      dev.copy(pdf, paste0(output.dir, "_Ribo.pdf"))
+      dev.off()
+      
+      
+      # Complexity
+      print(
+        QC_Plots_Complexity(seurat_object = HL.seurat.list[[i]], 
+                            high_cutoff = complexity.high,
+                            pt.size = 0.05)
+      ) 
+      
+      dev.copy(pdf, paste0(output.dir, "_complexity.pdf"))
+      dev.off()
+      
+    }
+    
+    # Filter dataset
+    
+    HL.seurat.list[[i]] <- subset(HL.seurat.list[[i]], 
+                                  subset = nFeature_RNA > feature.low & 
+                                    nFeature_RNA < feature.high & 
+                                    percent_mito < mito.high & 
+                                    percent_ribo > ribo.high & 
+                                    log10GenesPerUMI > complexity.high)
+    
+    if(do.plot){
+      # nFeatures filtered matrix
+      print(
+        QC_Plots_Genes(seurat_object = HL.seurat.list[[i]], 
+                       low_cutoff = feature.low, 
+                       high_cutoff = feature.high,
+                       pt.size = 0.05) #how many genes per cell? See where to set the cutoffs later
+      )
+      
+      dev.copy(pdf, paste0(output.dir, "_genes_filtered.pdf"))
+      dev.off()
+      
+      
+      # UMI filtered matrix
+      print(
+        QC_Plots_UMIs(seurat_object = HL.seurat.list[[i]], 
+                      low_cutoff = umi.low, 
+                      high_cutoff = umi.high, 
+                      y_axis_log = T,
+                      pt.size = 0.05)
+      )
+      
+      dev.copy(pdf, paste0(output.dir, "_UMI_filtered.pdf"))
+      dev.off()
+      
+      # Ribo filtered percentage
+      print(
+        QC_Plots_Feature(seurat_object = HL.seurat.list[[i]],
+                         feature = "percent_ribo",
+                         high_cutoff = ribo.high,
+                         pt.size = 0.05)
+      )
+      
+      dev.copy(pdf, paste0(output.dir, "_Ribo_filtered.pdf"))
+      dev.off()
+      
+      
+      
+      ##########################################
+      # check ADT and hashtag datasets
+      ##########################################
+      
+      head(HL.seurat.list[[i]]@meta.data)
+      
+      # nCount ADT dataset
+      print(
+        VlnPlot(HL.seurat.list[[i]],
+                features = "nCount_ADT",
+                pt.size = 0.05) + NoLegend()
+      )
+      
+      dev.copy(pdf, paste0(output.dir, "_nCount_ADT.pdf"))
+      dev.off()
+      
+      # nFeature ADT dataset
+      print(
+        VlnPlot(HL.seurat.list[[i]], 
+                features = "nFeature_ADT",
+                pt.size = 0.05) + NoLegend()
+      )
+      dev.copy(pdf, paste0(output.dir, "_nFeature_ADT.pdf"))
+      dev.off()
+      
+      # nCount hashtag dataset
+      print(
+        VlnPlot(HL.seurat.list[[i]], 
+                features = "nCount_Hashtag", 
+                pt.size = 0.05) + NoLegend()
+      )
+      
+      dev.copy(pdf, paste0(output.dir, "_nCount_hashtag.pdf"))
+      dev.off()
+      
+      # nfeature hashtag dataset
+      print(
+        VlnPlot(HL.seurat.list[[i]],
+                features = "nFeature_Hashtag", 
+                pt.size = 0.05) + NoLegend()
+      )
+      
+      dev.copy(pdf, paste0(output.dir, "_nfeature_hashtag.pdf"))
+      dev.off()
+      
+    }
+    
+  }
+  
+}
+
+```
+
+
+
+### Save seurat object
+```{r save_seurat_object}
+
+if(long.compute){
+  
+  # export and save seurat object
+  # SaveH5Seurat(HL.seurat,
+  #              filename = "saves/HL_seurat.h5Seurat",
+  #              overwrite = TRUE, 
+  #              verbose = TRUE)
+  # 
+  
+  SaveSeuratRds(HL.seurat, file = "saves/Preprocess_HL_seurat.rds")
+  
+}
+
+```
+
+## Adding TCR data {.tabset}
+
+### Create T-cell only seurat object
+```{r Tcell_seurat_object}
+
+# set Idents
+Idents(HL.seurat) <- HL.seurat@meta.data$anno.l1
+DefaultAssay(HL.seurat) <- "SCT"
+
+# subset to just T-cell populations, a handful of TCRs are found in monocytes, B-cells, NK cells but these will be ignored
+Tcell.seurat <- subset(HL.seurat, idents = c("CD4_cells", "CD8_cells"))
+Tcell.seurat@meta.data$anno.l1 <- droplevels(Tcell.seurat@meta.data$anno.l1)
+Tcell.seurat@meta.data$anno.l2 <- droplevels(Tcell.seurat@meta.data$anno.l2)
+
+
+
+# note that did look if TCR map to MAIT/ILC populations and found 
+# out of this many cells
+# ILCs = 169
+# MAITs = 1,554
+# Tregs = 147
+
+# TCR was recovered for this many cells
+# MAITs = 77 cells
+# ILCs = 2
+# Tregs = 15
+
+# Therefore represents approx. 5% of MAIT cells have a TCR
+# therefore dont include MAIT or ILC populations 
+
+```
+
+
+### Format data with scRepertoire
+```{r Format_data_with_scRep}
+
+#################################
+# Read in and format data
+#################################
+
+# install packages
+#BiocManager::install("scRepertoire")
+
+
+# Load library
+library("scRepertoire")
+
+# read in contig files
+# note that sequence run 1 doesnt have vdj sequencing
+run.2.contig <- loadContigs("data/Run_2_allsamples/vdj_t/", format = "10X")
+run.3.contig <- loadContigs("data/Run_3_allsamples/vdj_t/", format = "10X")
+run.4.contig <- loadContigs("data/Run_4_allsamples/vdj_t/", format = "10X")
+
+
+
+
+# create list of contigs
+contig.list <- list(run.2.contig, run.3.contig,
+                    run.4.contig)
+
+# Combine contig list
+combined.contig <- combineTCR(contig.list, 
+                              samples = c("Run_2", "Run_3", "Run_4"), 
+                              #ID = c("Healthy", "Patient", "Patient"), 
+                              removeNA = TRUE,
+                              removeMulti = FALSE, 
+                              filterMulti = TRUE) # take the top 2 expressed chains for cells with multiple chains 
+
+# on average, filteringMulti results in approx. 200 more cells for each sample than outright removing cells
+head(combined.contig)
+colnames(HL.seurat)
+
+
+# dataset summary
+table(Tcell.seurat@meta.data$anno.l1) 
+table(Tcell.seurat@meta.data$anno.l2) 
+# CD4_cells = 21,886
+# CD8_cells = 5,857
+# Tregs = 147 cells
+
+
+# Combine seurat object with contig info combineExpression
+HL.seurat.tcr <- combineExpression(combined.contig,
+                                   Tcell.seurat,
+                                   cloneCall = "aa",
+                                   chain = "both",
+                                   proportion = TRUE,
+                                   cloneSize = c(Rare = 1e-04, 
+                                                 Small = 0.001,
+                                                 Medium = 0.01, 
+                                                 Large = 0.1, 
+                                                 Hyperexpanded = 1),
+                                   group.by = "none", # Alternative frequencies are calculated in next code Chunk
+                                   filterNA = TRUE) # should seurat object be subsetted to remove NA values
+
+# Summarise tcrs captured
+
+table(HL.seurat.tcr@meta.data$anno.l1) 
+table(HL.seurat.tcr@meta.data$anno.l2) 
+# CD4_cells = 2,790
+# CD8_cells = 571
+# Tregs = 15 cells
+
+# this is equal to
+(2790/21886)*100 # ~13 percent of CD4s have a TCR found
+(571/5857)*100 # ~10 percent of CD8s have a TCR found
+(15/147)*100 # ~10 percent of Tregs have a TCR found
+
+
+lapply(combined.contig, dim)
+# run 2 = 2,674 
+# run 3 = 1,792 
+# run 4 = 601
+# total = 5067
+(3376/5067)*100 # 66% of sequenced TCRs are recovered and applied to dataset
+
+
+
+# Write out data for future use in scRep package
+saveRDS(combined.contig, "saves/combined_contig.rds")
+
+
+# remove unneeded objects
+rm(contig.list, run.2.contig, run.3.contig, run.4.contig)
+
+```
+
+### Split metadata CTgene into TRAV/J/C and TRBV/J/C gene calls
+```{r split_CTgene_metadata_info}
+
+library(stringr)
+
+
+# Split the CTgene string at "." 
+temp.list <- str_split(HL.seurat.tcr@meta.data$CTgene, "\\.")
+temp.list
+
+
+# First and second elements of the list are V and J calls
+HL.seurat.tcr@meta.data$TRAV <- sapply(temp.list, "[[", 1)
+HL.seurat.tcr@meta.data$TRAJ <- sapply(temp.list, "[[", 2)
+
+# Third element is the TRAC and TRBV combined - therefore split this by "_"
+temp.list.2 <- sapply(temp.list, "[[", 3)
+temp.list.2 <- str_split(temp.list.2, "_")
+
+# First element is TRAC and second is TRBV gene call
+HL.seurat.tcr@meta.data$TRAC <- sapply(temp.list.2, "[[", 1)
+HL.seurat.tcr@meta.data$TRBV <- sapply(temp.list.2, "[[", 2)
+
+# 4th and 5th elements of original list are TRBJ and TRBC calls respectively
+HL.seurat.tcr@meta.data$TRBJ <- sapply(temp.list, "[[", 4)
+HL.seurat.tcr@meta.data$TRBC <- sapply(temp.list, "[[", 6)
+
+# remove unneeded variables 
+rm(temp.list, 
+   temp.list.2)
+
+```
+
+### Count clonotype frequencies and normalise
+```{r Count_and_normalise_clonotype_frequencies}
+
+####################################################################################
+# Need to count clonotype occurrence per donor and then normalise this value 
+####################################################################################
+
+# create temp meta.data df and append cell_ID as column (lost in dplyr workflow)
+meta.data.temp <- HL.seurat.tcr@meta.data
+meta.data.temp$cell_ID <- rownames(HL.seurat.tcr@meta.data)
+
+
+# Get total number of cells in each donor that has a TCR
+Donor.cell.n <- table(meta.data.temp$DonorID)
+total.cell.n <- sum(Donor.cell.n) # 3,376 cells total
+
+
+####################################################################################
+# Count occurence of clonotypes across entire dataset 
+####################################################################################
+# Also: Normalise n() by # of cells within dataset
+meta.data.temp <- meta.data.temp %>%
+  dplyr::group_by(CTaa) %>%
+  dplyr::mutate(Total_clonotype_n = n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Total_clonotype_freq = (Total_clonotype_n/total.cell.n)*100) %>%
+  dplyr::ungroup()
+
+####################################################################################
+# Count occurence of clonotypes across entire condition 
+####################################################################################
+# Also: Normalise n() by # of cells within condition
+meta.data.temp <- meta.data.temp %>%
+  dplyr::group_by(CTaa, DonorID) %>%
+  dplyr::mutate(Clone_Donorwise_n = n()) %>%
+  dplyr::group_by(DonorID) %>%
+  dplyr::mutate(Clone_Donorwise_freq = case_when(DonorID == "Unknown" ~ (Clone_Donorwise_n/Donor.cell.n["Unknown"])*100,
+                                                 DonorID == "HD_03" ~ (Clone_Donorwise_n/Donor.cell.n["HD_03"])*100, 
+                                                 DonorID == "HD_04" ~ (Clone_Donorwise_n/Donor.cell.n["HD_04"])*100,
+                                                 DonorID == "Pt_01" ~ (Clone_Donorwise_n/Donor.cell.n["Pt_01"])*100,
+                                                 DonorID == "Pt_02" ~ (Clone_Donorwise_n/Donor.cell.n["Pt_02"])*100,
+                                                 DonorID == "Pt_03" ~ (Clone_Donorwise_n/Donor.cell.n["Pt_03"])*100,
+                                                 DonorID == "Pt_04" ~ (Clone_Donorwise_n/Donor.cell.n["Pt_04"])*100,
+                                                 DonorID == "Pt_05" ~ (Clone_Donorwise_n/Donor.cell.n["Pt_05"])*100,
+                                                 DonorID == "Pt_06" ~ (Clone_Donorwise_n/Donor.cell.n["Pt_06"])*100,
+                                                 DonorID == "Pt_07" ~ (Clone_Donorwise_n/Donor.cell.n["Pt_07"])*100,
+                                                 DonorID == "Pt_08" ~ (Clone_Donorwise_n/Donor.cell.n["Pt_08"])*100,
+                                                 DonorID == "Pt_09" ~ (Clone_Donorwise_n/Donor.cell.n["Pt_09"])*100,
+                                                 DonorID == "Pt_10" ~ (Clone_Donorwise_n/Donor.cell.n["Pt_10"])*100,
+                                                 DonorID == "Pt_11" ~ (Clone_Donorwise_n/Donor.cell.n["Pt_11"])*100,
+                                                 DonorID == "Pt_12" ~ (Clone_Donorwise_n/Donor.cell.n["Pt_12"])*100)) %>%
+  dplyr::ungroup()
+
+
+######################################
+# Add new metadata to seurat object
+######################################
+
+#########
+# Total 
+#########
+
+# Add total clonotype n value
+HL.seurat.tcr <- AddMetaData(object = HL.seurat.tcr, 
+                             col.name = "Total_clonotype_n",
+                             metadata = meta.data.temp$Total_clonotype_n)
+
+# Add total clonotype freq
+HL.seurat.tcr <- AddMetaData(object = HL.seurat.tcr, 
+                             col.name = "Total_clonotype_freq",
+                             metadata = meta.data.temp$Total_clonotype_freq)
+
+##################
+# Donor-wise 
+##################
+
+# Add clone Donor-wise n value
+HL.seurat.tcr <- AddMetaData(object = HL.seurat.tcr, 
+                             col.name = "Clone_Donorwise_n",
+                             metadata = meta.data.temp$Clone_Donorwise_n)
+
+# Add Clone Donor-wise freq
+HL.seurat.tcr <- AddMetaData(object = HL.seurat.tcr, 
+                             col.name = "Clone_Donorwise_freq",
+                             metadata = meta.data.temp$Clone_Donorwise_freq)
+
+
+
+rm(meta.data.temp)
+
+```
+
+
+### Annotate cells as rare, small, hyperexpanded etc and clean metadata
+```{r annotate_clonotype}
+
+
+# clonotype calculation done by scRep doesnt look right, use my own abundance calculation and re-annotate clonotype
+
+
+# Firstly, remove freq data and clonotype call, and indicator generated by scRep
+head(HL.seurat.tcr@meta.data)
+
+HL.seurat.tcr@meta.data$clonalFrequency <- NULL
+HL.seurat.tcr@meta.data$cloneSize <- NULL
+HL.seurat.tcr@meta.data$clonalProportion <- NULL
+head(HL.seurat.tcr@meta.data)
+
+
+
+
+# get clonotype abundance stats
+
+
+summary(HL.seurat.tcr@meta.data$Total_clonotype_n) # 22 = max
+summary(HL.seurat.tcr@meta.data$Clone_Donorwise_n) # 19 = max
+
+clonotype.vals <- HL.seurat.tcr@meta.data$Clone_Donorwise_n
+cloneType <- HL.seurat.tcr@meta.data$Clone_Donorwise_n * NA
+
+single = 1
+small = 5
+medium = 10
+large = 20
+hyperexpanded = 150
+
+cloneType[clonotype.vals == single] <- "Single (1)"
+cloneType[clonotype.vals > single & clonotype.vals <= small] <- "Small (1 < X <= 5)"
+cloneType[clonotype.vals > small & clonotype.vals <= medium] <- "Medium (5 < X <= 10)"
+cloneType[clonotype.vals > medium & clonotype.vals <= large] <- "Large (10 < X <= 20)"
+cloneType[clonotype.vals > large & clonotype.vals <= hyperexpanded] <- "Hyperexpanded (20 < X <= 150)"
+unique(cloneType)
+
+
+# Ensure seurat object clonoType var is a factor with correct levels
+HL.seurat.tcr@meta.data$Clonetype <- factor(cloneType, 
+                                            levels = c("Hyperexpanded (20 < X <= 150)",
+                                                       "Large (10 < X <= 20)", 
+                                                       "Medium (5 < X <= 10)",
+                                                       "Small (1 < X <= 5)", 
+                                                       "Single (1)"))
+
+HL.seurat.tcr@meta.data$Clonetype <- droplevels(HL.seurat.tcr@meta.data$Clonetype)
+
+unique(HL.seurat.tcr@meta.data$Clonetype)
+```
+
+### Add TCR data to T-cell only seurat
+```{r add_TCR_to_Tcell_seurat}
+
+
+# It was easier to use the filtering option of scRep to remove anything without a TCR, then do filtering such as splitting TCRA and TCRB gene strings
+# then add this TCR data back to the Tcell only seurat object
+HL.seurat.tcr # 3,376 cells
+Tcell.seurat # 27,890 cells
+
+# just select metadata from the tcr object
+temp.metadata <- HL.seurat.tcr@meta.data %>%
+  dplyr::select(c(CTgene, CTnt, CTaa, CTstrict, 
+                  TRAV, TRAJ, TRAC, TRBV, TRBJ, TRBC, 
+                  Total_clonotype_n, Total_clonotype_freq, Clone_Donorwise_n, Clone_Donorwise_freq, Clonetype)) %>%
+  tibble::rownames_to_column()
+
+# extract Tcell only seurat metadata
+Tcell.metadata <- Tcell.seurat@meta.data %>%
+  tibble::rownames_to_column()
+
+# merge metadata objects
+new.metadata <- merge(Tcell.metadata, temp.metadata, by = "rowname", all = TRUE)
+
+new.metadata <- new.metadata %>%
+  tibble::column_to_rownames()
+
+sum(rownames(new.metadata) != rownames(Tcell.seurat@meta.data)) # data is in exact same order
+
+# add the entire metadata table to seurat object
+Tcell.seurat@meta.data <- new.metadata
+
+# further annotate for easy downstream plotting and filtering
+Tcell.seurat@meta.data <- Tcell.seurat@meta.data %>%
+  dplyr::mutate(TCRStatus = ifelse(is.na(CTaa), "NO", "YES"))
+
+# remove unneeded objects
+rm(HL.seurat.tcr)
+rm(temp.metadata)
+rm(new.metadata)
+rm(Tcell.metadata)
+
+```
+
+
+### GEX normalisation & integration Tcell only seurat
+```{r GEX_norm_and_integration_Tcell_only}
+
+# GEX normalisation
+if(long.compute){
+  
+  # Note, 
+  # I compared CCA integration and rpca integration, looks cca is better fit for this dataset 
+  # also see documentation on cca vs rpca integration, cca more aligns with this dataset 
+  
+  # set default assay 
+  DefaultAssay(Tcell.seurat) <- "RNA"
+  
+  # split object up based on sequencing run / in seurat V5 these are splitting the layers
+  #Tcell.seurat[["RNA"]] <- split(Tcell.seurat[["RNA"]],  f = Tcell.seurat$RunID)
+  
+  
+  
+  #####################################################
+  # Normalise with scTransform and integrate data
+  #####################################################
+  # note error with more recent version of matrixStats resulting in "useNames = NA is defunct" error. downgrade to matrixStats version 1.1.0 as a workaround
+  # https://github.com/satijalab/seurat/issues/7501#issuecomment-1854571904
+  #remotes::install_version("matrixStats", version="1.1.0") # restart your session and run previous scripts  
+  
+  
+  # note RNA assay is split into run level layers, below script will apply normalisation etc layer-wise
+  
+  # Normalise and scale with SCTransform v2
+  Tcell.seurat <- SCTransform(Tcell.seurat, 
+                              method = "glmGamPoi", 
+                              vars.to.regress = "percent_mito", 
+                              vst.flavor = "v2",
+                              verbose = TRUE) %>%
+    RunPCA(reduction.name = "pca_sct") %>%
+    RunUMAP(reduction = "pca_sct",
+            dims = 1:30, 
+            reduction.name = "umap.unintegrated.sct")
+  
+  DefaultAssay(HL.seurat) <- "SCT"
+  
+  # integrate layers using cca integration
+  Tcell.seurat <- IntegrateLayers(object = Tcell.seurat,
+                                  orig.reduction = "pca_sct",
+                                  new.reduction = "integrated.cca.sct",
+                                  method = CCAIntegration,
+                                  normalization.method = "SCT",
+                                  verbose = F)
+  
+  # find clusters and dim reduction using integrated data
+  Tcell.seurat <- FindNeighbors(Tcell.seurat,
+                                dims = 1:30,
+                                reduction = "integrated.cca.sct") %>%
+    FindClusters(resolution = 1.5, 
+                 cluster.name = "clusters_cca_sct") %>%
+    RunUMAP(reduction = "integrated.cca.sct",
+            dims = 1:30, 
+            reduction.name = "umap.cca.sct")
+  
+  
+  
+  
+  if(do.plot){
+    
+    # create output dir
+    output.dir <- paste0("results/integration_Tcell_only_seurat/")
+    
+    if(!dir.exists(output.dir)){
+      dir.create(output.dir, 
+                 recursive = T)
+      
+    }
+    
+    
+    unintegrated.reduction <- "umap.unintegrated.sct"
+    integrated.reduction <- "umap.cca.sct"
+    title.var <- "SCT"
+    
+    
+    
+    # evaluate integration and dim reduction
+    
+    vars.plot <- c("RunID", "predicted.celltype.l1", "DonorID")
+    for(i in seq_along(vars.plot)){
+      
+      
+      # remove "." from name
+      name.var <- gsub("\\.", "_", vars.plot[i])
+      
+      before.int <- DimPlot(Tcell.seurat,
+                            reduction = unintegrated.reduction, 
+                            label = T,
+                            group.by = vars.plot[i]) + NoLegend() + ggtitle(paste0("Unintegrated ", title.var, " Normalisation"))
+      
+      after.int <- DimPlot(Tcell.seurat,
+                           reduction = integrated.reduction, 
+                           label = T,
+                           group.by = vars.plot[i]) + NoLegend() + ggtitle(paste0("CCA Integration using ", title.var, " Normalisation"))
+      
+      print(before.int | after.int)
+      dev.copy(pdf, paste0(output.dir, "UMAP_before_after_integration", name.var, ".pdf"))
+      dev.off()
+      
+      
+      
+    }
+    
+    
+    
+  }
+  
+}
+
+
+```
+
+### ADT normalisation & integrate Tcell only seurat
+```{r ADT_norm_and_integration_Tcell_only}
+
+
+if(long.compute){
+  
+  # create output dir
+  output.dir <- paste0("results/integration_Tcell_only_seurat/")
+  
+  if(!dir.exists(output.dir)){
+    dir.create(output.dir, 
+               recursive = T)
+    
+  }
+  
+  
+  # Normalize ADT data,
+  DefaultAssay(Tcell.seurat) <- "ADT"
+  
+  VariableFeatures(Tcell.seurat) <- rownames(Tcell.seurat[["ADT"]])
+  Tcell.seurat <- NormalizeData(Tcell.seurat, 
+                                normalization.method = "CLR",
+                                margin = 2, # normalise accross cells
+                                verbose = TRUE) %>%
+    ScaleData() %>% 
+    RunPCA(reduction.name = 'apca')
+  
+  
+  # Integrate ADT data
+  
+  # split object up based on sequencing run
+  Tcell.seurat[["ADT"]] <- split(Tcell.seurat[["ADT"]],  f = Tcell.seurat$RunID)
+  
+  # Note: i investigated not integrating, vs rpca vs cca and rpca and cca look quite comparable 
+  # there was a decent batch effect evident so integration is needed 
+  # for consistency used cca as this was used for gex data also
+  
+  # integrate layers using cca integration
+  Tcell.seurat <- IntegrateLayers(object = Tcell.seurat,
+                                  orig.reduction = "apca",
+                                  new.reduction = "integrated.cca.adt",
+                                  features = rownames(Tcell.seurat[["ADT"]]),
+                                  method = CCAIntegration,
+                                  verbose = F)
+  
+  
+  
+  # Create adt only data umap
+  Tcell.seurat <- RunUMAP(Tcell.seurat,
+                          reduction = "integrated.cca.adt",
+                          dims = 1:30, 
+                          reduction.name = "umap.cca.adt")
+  
+  
+  DimPlot(Tcell.seurat,
+          reduction = "umap.cca.adt", 
+          label = T,
+          group.by = "RunID") + 
+    NoLegend() + ggtitle(paste0("CCA Integrated adt data only umap"))
+  
+  dev.copy(pdf, paste0(output.dir, "UMAP_integrated_ADT_data.pdf"))
+  dev.off()
+  
+  DefaultAssay(Tcell.seurat) <- "RNA"
+  
+}
+```
+
+
+### Weighted Nearest Neighbor Analysis Tcell only seurat
+```{r WNNA_Tcell_only}
+
+if(long.compute){
+  
+  
+  DefaultAssay(Tcell.seurat) <- "RNA"
+  
+  Tcell.seurat <- FindMultiModalNeighbors(Tcell.seurat, 
+                                          reduction.list = list("integrated.cca.sct", "integrated.cca.adt"), 
+                                          dims.list = list(1:30, 1:47), 
+                                          modality.weight.name = c("SCT.weight", "ADT.weight"))
+  
+  
+  Tcell.seurat <- RunUMAP(Tcell.seurat, 
+                          nn.name = "weighted.nn", 
+                          reduction.name = "wnn.umap", 
+                          reduction.key = "wnnUMAP_")
+  
+  Tcell.seurat <- FindClusters(Tcell.seurat, 
+                               graph.name = "wsnn", 
+                               algorithm = 3, 
+                               resolution = 1.5, 
+                               verbose = FALSE)
+  
+  
+  DimPlot(Tcell.seurat,
+          reduction = "wnn.umap", 
+          label = T,
+          group.by = "wsnn_res.1.5")
+  
+  
+}
+```
+
+
+
+### Save Tcell only seurat object
+```{r save_Tcell_only_seurat_object}
+
+if(long.compute){
+  
+  
+  SaveSeuratRds(Tcell.seurat, file = "saves/Preprocess_Tcell_seurat.rds")
+  
+}
+
+```
+
