@@ -1,5 +1,7 @@
 # Spatial RCC — spatial transcriptomics analysis
 
+> **Status:** unpublished work — if you use this analysis, please cite this repository (see [`CITATION.cff`](CITATION.cff)).
+
 Preprocessing and analysis of a **renal cell carcinoma (RCC) spatial transcriptomics** dataset,
 mapping immune and tumour compartments in tissue context.
 
